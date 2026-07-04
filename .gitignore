@@ -1,0 +1,20 @@
+__pycache__/
+*.pyc
+# large model weights — symlinked/downloaded on the node, never committed
+*.pt
+*.pth
+downloads/
+# annotation outputs / scratch
+scored/
+*.pkl
+*.parquet
+*.jsonl
+# secrets — never commit
+.secrets/
+*-sa.json
+.env
+# human-subjects imagery — never commit
+*.jpg
+*.png
+*.jpeg
+skeletons/
