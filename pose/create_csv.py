@@ -1,10 +1,14 @@
 # Release-parameterized flat-CSV builder for pose pkls. Adapted from khaiaw's
-# create_csv_from_pkl.py with three changes for reuse/scale:
+# create_csv_from_pkl.py with fixes for reuse/scale (all learned the hard way):
 #   - input/output paths from argv:  python create_csv.py <pkl_dir> <out.csv>
 #   - CPU-safe unpickler (pkls hold CUDA tensors) so no GPU is needed
-#   - list-accumulate instead of concat-in-loop (was O(n^2); 5.4M rows would crawl)
-# Run in an env with torch+pandas+ray (e.g. mmpose_env). One row per detected person;
-# schema matches the old 4M_with_NA_bbox_limbs.csv (29 cols).
+#   - conf via float() (our run_model saves person_confs as numpy, not torch)
+#   - list-accumulate instead of concat-in-loop (was O(n^2))
+#   - each Ray worker writes its chunk to a part-CSV on disk (returns just the path),
+#     then stream-concat — avoids returning 5.4M-row frames through Ray's object store
+#     (which spills to /tmp and fills it). Ray _temp_dir is pinned to /data2.
+# Run in an env with torch+pandas+ray (mmpose_env). One row per detected person; 29-col
+# schema matching the old 4M_with_NA_bbox_limbs.csv. Set TMPDIR=/data2/mcfrank/tmp.
 import glob
 import os
 import random
@@ -281,8 +285,9 @@ def create_dataframe(vis_pkl_paths):
     return pd.DataFrame(_rows, columns=df_out.columns) if _rows else df_out
 
 @ray.remote(num_gpus=0)
-def create_dataframe_remote_babyview_pose(vis_pkl_paths):
-    return create_dataframe(vis_pkl_paths)
+def create_dataframe_remote_babyview_pose(vis_pkl_paths, part_path):
+    create_dataframe(vis_pkl_paths).to_csv(part_path, index=False)
+    return part_path
 
 if __name__ == '__main__':
     vis_pkl_paths = glob.glob(os.path.join(out_vis_dir, '**/*.pkl'), recursive=True)
@@ -297,19 +302,25 @@ if __name__ == '__main__':
 
     # Split the PKL paths into chunks for parallel processing
     # Initialize Ray
-    ray.init(num_cpus=num_processes)
-    num_chunks = num_processes
-    chunks = np.array_split(vis_pkl_paths, num_chunks)
-
-    # Process each chunk in parallel
-    dataframes = ray.get([create_dataframe_remote_babyview_pose.remote(chunk) for chunk in chunks])
-
-
-    # Combine all dataframes into a single dataframe
-    final_dataframe = pd.concat(dataframes, ignore_index=True)
-
-    # Save the combined dataframe to a CSV file
-    final_dataframe.to_csv(output_csv_path, index=False)
+    ray.init(num_cpus=num_processes, _temp_dir="/data2/mcfrank/ray_tmp")
+    chunks = np.array_split(vis_pkl_paths, num_processes)
+    part_dir = output_csv_path + ".parts"
+    os.makedirs(part_dir, exist_ok=True)
+    parts = ray.get([
+        create_dataframe_remote_babyview_pose.remote(chunk, os.path.join(part_dir, f"part_{i:03d}.csv"))
+        for i, chunk in enumerate(chunks)])
+    # stream-concat the part CSVs (constant memory), keep header from the first only
+    with open(output_csv_path, "w") as out:
+        for i, pp in enumerate(sorted(parts)):
+            with open(pp) as f:
+                header = f.readline()
+                if i == 0:
+                    out.write(header)
+                for line in f:
+                    out.write(line)
+    import shutil
+    shutil.rmtree(part_dir)
+    print("WROTE", output_csv_path)
 
     # Print some statistics
     print(final_dataframe.round(2).describe())
