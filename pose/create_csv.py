@@ -322,5 +322,3 @@ if __name__ == '__main__':
     shutil.rmtree(part_dir)
     print("WROTE", output_csv_path)
 
-    # Print some statistics
-    print(final_dataframe.round(2).describe())
