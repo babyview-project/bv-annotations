@@ -130,3 +130,26 @@ release + this repo's SHA next to the outputs.
   seed `2026.1/outputs/pose_1fps` by **hard-linking/copying the 2025.2 pkls** for unchanged videos and
   only computing the new ones — worth checking id overlap before burning ~50 GPU-hours.
 - **Push `bv-annotations` to GitHub** (name pending since July) so the node and laptop stop drifting.
+
+## UPDATE 2026-08-21 (afternoon): the run is live
+
+Supersedes the "2026.1 is not runnable yet" TL;DR above. What changed:
+
+- **Inputs:** khaiaw's complete GCS mirror (Jul 22–24) is at `/ccn2b/dataset/babyview/gcloud/pull/` (20,301 mp4s,
+  11.5 TB, verified vs bucket + Airtable). No 1-fps frames existed for 2026.1, so **we extract them ourselves** with
+  `frames/extract_frames_1fps.py` — khaiaw's 2025.2 recipe, verified pixel-identical on a re-extracted 2025.2 video.
+- **Reuse:** 2026.1 ⊇ 2025.2 exactly (all 8,566 ids, durations match pkl counts ±1 s) → 2025.2 pkls are copied into
+  the 2026.1 tree (`pose/copy_2025_2_pose.sh`); only the 11,735 new videos (≈6.4M frames) are extracted + posed.
+- **Env:** rebuilt per SETUP.md with two extra pins learned the hard way — `setuptools<81` (mmengine imports
+  `pkg_resources`) and `ultralytics==8.4.87` (the 2025.2 freeze; latest drifted) — and numpy 1.26.4 installed **last
+  with `--no-deps`** (any later `pip install` drags numpy 2 back in → `xtcocotools` ABI crash). Verified: same
+  #persons and 0.000 px keypoint diff vs the released 2025.2 pkls on 20 frames.
+- **Where:** Cliona's `/ccn2b/dataset/babyview/2026.1/` is group-only, so everything is staged at
+  `/ccn2b/dataset/babyview/_mcfrank_2026.1_staging/{extracted_frames_1fps,outputs/pose_1fps}` and `mv`'d in once the
+  dir is opened. Run state/logs: `/data2/mcfrank/pose_2026_1/` (markers, waves, manifest, meta/crosswalk).
+- **Chain (all detached on node14):** extraction (24 niced CPU procs, ~15 h) → `pose/pose_waves.sh` (8 GPUs, waves
+  over newly extracted videos, per-video done markers, 3 retries) → `pose/finalize.sh` (frame dims, CSV, sanity).
+  Watch: `tail /data2/mcfrank/pose_2026_1/{extract_2026_1,pose_waves,finalize}.log`.
+- **Camera versions (Airtable `camera`):** bones = V2, mini = V3 (4K; ~1.5k videos in 4:3 mode → 512×683 frames),
+  headlight = separate rig (landscape; exclude). 2025.2 has no mini video. Frame dims now vary per video — always
+  normalize by the per-video (w, h) from `frames/frame_dims.py`.
