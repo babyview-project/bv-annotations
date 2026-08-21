@@ -18,6 +18,9 @@ def extract(video_path):
     marker = os.path.join(ARGS.marker_dir, vid)
     if os.path.exists(marker):
         return (vid, 'skip', 0, 0, 0, 0.0)
+    # another instance (forward/reverse over the same list) is on it: dir exists, no marker, recently touched
+    if os.path.isdir(out_dir) and time.time() - os.path.getmtime(out_dir) < ARGS.inprogress_min * 60:
+        return (vid, 'skip_inprogress', 0, 0, 0, 0.0)
     os.makedirs(out_dir, exist_ok=True)
     t0 = time.time()
     cmd = ['nice', '-n', str(ARGS.nice), 'ffmpeg', '-y', '-nostdin', '-hide_banner', '-loglevel', 'error',
@@ -50,15 +53,18 @@ def main():
     p.add_argument('--marker_dir', required=True); p.add_argument('--manifest', required=True)
     p.add_argument('--num_processes', type=int, default=16); p.add_argument('--threads', type=int, default=4)
     p.add_argument('--nice', type=int, default=10)
+    p.add_argument('--reverse', action='store_true', help='process the list back-to-front (run a 2nd instance this way)')
+    p.add_argument('--inprogress_min', type=float, default=30, help='treat a marker-less dir younger than this as in progress')
     ARGS = p.parse_args()
     os.makedirs(ARGS.out_root, exist_ok=True); os.makedirs(ARGS.marker_dir, exist_ok=True)
     videos = [l.strip() for l in open(ARGS.list) if l.strip()]
+    if ARGS.reverse: videos = videos[::-1]
     print(f'{len(videos)} videos, {ARGS.num_processes} procs x {ARGS.threads} threads', flush=True)
     done = 0; t0 = time.time()
     with open(ARGS.manifest, 'a') as mf, Pool(ARGS.num_processes) as pool:
         for vid, status, n, w, h, secs in pool.imap_unordered(extract, videos, chunksize=1):
             done += 1
-            if status != 'skip':
+            if not status.startswith('skip'):
                 mf.write(f'{vid}\t{status}\t{n}\t{w}\t{h}\t{secs:.1f}\n'); mf.flush()
             if done % 25 == 0 or status.startswith('fail'):
                 print(f'[{done}/{len(videos)}] {vid} {status} n={n} {w}x{h} {secs:.0f}s  elapsed {(time.time()-t0)/60:.1f} min', flush=True)
