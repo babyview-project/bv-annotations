@@ -4,8 +4,12 @@
 set -u
 ST=/ccn2b/dataset/babyview/_mcfrank_2026.1_staging; REL=/ccn2b/dataset/babyview/2026.1; W=/data2/mcfrank/pose_2026_1
 [ "${1:-}" = "--go" ] || { echo "dry run — add --go"; }
-for f in $W/final_analysis.log; do grep -q FINAL_ANALYSIS_DONE $f || { echo "chain not finished ($f)"; exit 1; }; done
-pgrep -u mcfrank -f "extract_frames_1fp[s].py|run_mode[l].py|create_cs[v].py" >/dev/null && { echo "writers still running"; exit 1; }
+grep -q ANALYSES_DONE $W/chain.log 2>/dev/null || { echo "chain not finished (no ANALYSES_DONE in chain.log)"; exit 1; }
+grep -q "blocked" $W/chain.log && { echo "chain finished BLOCKED - do not land"; exit 1; }
+nbad=$(wc -l < $W/bad_pkls_runtime.txt 2>/dev/null || echo 0)
+[ "$nbad" -eq 0 ] || { echo "REFUSING: $nbad unreadable pkls recorded during the CSV build"; exit 1; }
+grep -q "pkl != jpg:          0" $W/verify_report.txt || { echo "REFUSING: verify_report shows pkl/jpg mismatches"; exit 1; }
+pgrep -u mcfrank -f "extract_frames_1fp[s].py|run_mode[l].py|create_cs[v].py|copy_one" >/dev/null && { echo "writers still running"; exit 1; }
 for p in $REL/extracted_frames_1fps $REL/outputs/pose_1fps $REL/outputs/pose_1fps_bbox_limbs.csv; do [ -e $p ] && { echo "target exists: $p"; exit 1; }; done
 nf=$(ls $ST/extracted_frames_1fps | wc -l); np=$(ls $ST/outputs/pose_1fps | wc -l); echo "staged: $nf frame dirs, $np pose dirs, csv $(du -h $ST/outputs/pose_1fps_bbox_limbs.csv | cut -f1)"
 # the GCS pull is a superset of the release: refuse to land anything that is not exactly the 2026.1 set
