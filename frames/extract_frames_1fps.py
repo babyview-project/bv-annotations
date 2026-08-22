@@ -8,7 +8,16 @@ usage: extract_frames_1fps.py --list videos.txt --out_root <.../extracted_frames
          --marker_dir <node-local dir> --manifest <tsv> [--num_processes 16] [--threads 4]
 """
 import argparse, os, subprocess, time, sys, glob
-from multiprocessing import Pool
+from multiprocessing import Pool, Value
+
+GPU_ID = None           # set per worker when --hwaccel_gpus is given
+_counter = None
+
+def _init_worker(counter, gpus):
+    global GPU_ID
+    with counter.get_lock():
+        i = counter.value; counter.value += 1
+    GPU_ID = gpus[i % len(gpus)] if gpus else None
 
 SCALE = "scale='if(gte(iw,ih),-1,512):if(gte(iw,ih),512,-1)'"
 
@@ -23,12 +32,15 @@ def extract(video_path):
         return (vid, 'skip_inprogress', 0, 0, 0, 0.0)
     os.makedirs(out_dir, exist_ok=True)
     t0 = time.time()
-    cmd = ['nice', '-n', str(ARGS.nice), 'ffmpeg', '-y', '-nostdin', '-hide_banner', '-loglevel', 'error',
+    hw = ['-hwaccel', 'cuda', '-hwaccel_output_format', 'cuda'] if GPU_ID is not None else []
+    vf = f'fps=1:round=near,hwdownload,format=nv12,{SCALE}' if GPU_ID is not None else f'fps=1:round=near,{SCALE}'
+    cmd = ['nice', '-n', str(ARGS.nice), 'ffmpeg', '-y', '-nostdin', '-hide_banner', '-loglevel', 'error'] + hw + [
            '-threads', str(ARGS.threads), '-i', video_path,
-           '-vf', f'fps=1:round=near,{SCALE}', '-qscale:v', '1', '-pix_fmt', 'yuvj444p',
+           '-vf', vf, '-qscale:v', '1', '-pix_fmt', 'yuvj444p',
            '-video_track_timescale', '1000', '-frame_pts', '1', '-vsync', 'vfr',
            os.path.join(out_dir, '%05d.jpg')]
-    r = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+    env = dict(os.environ, CUDA_VISIBLE_DEVICES=str(GPU_ID)) if GPU_ID is not None else None
+    r = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, env=env)
     secs = time.time() - t0
     frames = sorted(glob.glob(os.path.join(out_dir, '*.jpg')))
     w = h = 0
@@ -55,13 +67,19 @@ def main():
     p.add_argument('--nice', type=int, default=10)
     p.add_argument('--reverse', action='store_true', help='process the list back-to-front (run a 2nd instance this way)')
     p.add_argument('--inprogress_min', type=float, default=30, help='treat a marker-less dir younger than this as in progress')
+    p.add_argument('--shuffle', type=int, default=None, help='seed: process the list in a seeded random order (3rd instance)')
+    p.add_argument('--hwaccel_gpus', default='', help='comma-separated GPU ids: decode on NVDEC (variant A, byte-identical), round-robin per worker')
     ARGS = p.parse_args()
     os.makedirs(ARGS.out_root, exist_ok=True); os.makedirs(ARGS.marker_dir, exist_ok=True)
     videos = [l.strip() for l in open(ARGS.list) if l.strip()]
     if ARGS.reverse: videos = videos[::-1]
+    if ARGS.shuffle is not None:
+        import random; random.Random(ARGS.shuffle).shuffle(videos)
+    gpus = [int(g) for g in ARGS.hwaccel_gpus.split(',') if g != '']
     print(f'{len(videos)} videos, {ARGS.num_processes} procs x {ARGS.threads} threads', flush=True)
     done = 0; t0 = time.time()
-    with open(ARGS.manifest, 'a') as mf, Pool(ARGS.num_processes) as pool:
+    counter = Value('i', 0)
+    with open(ARGS.manifest, 'a') as mf, Pool(ARGS.num_processes, initializer=_init_worker, initargs=(counter, gpus)) as pool:
         for vid, status, n, w, h, secs in pool.imap_unordered(extract, videos, chunksize=1):
             done += 1
             if not status.startswith('skip'):
