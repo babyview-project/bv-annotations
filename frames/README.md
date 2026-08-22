@@ -10,10 +10,17 @@ Adds: explicit video list (so you can prioritize), per-video marker files for re
 list (`--reverse`, `--shuffle SEED`; marker + "dir younger than 30 min" rules keep instances disjoint).
 Throughput (ccn2, 4 threads/proc): 1080p ≈ 13-15× realtime, 4K ≈ 5-6× realtime per CPU process.
 
-**NVDEC (`--hwaccel_gpus 0,1,…`)**: `-hwaccel cuda -hwaccel_output_format cuda` + `fps=1:round=near,hwdownload,format=nv12,scale=…`
-is **byte-identical** to the CPU path (verified on 1080p and 4K, 90/90 frames each, 2026-08-21) and takes the decode
-off the CPUs (4K ≈ 1.75× faster per stream; 2 streams/GPU = the A40's NVDEC count). Two paths that are NOT identical:
-cuvid's own `-resize`, and inserting `format=yuv420p` before `scale` (swscale takes a different chroma path).
+**NVDEC (`--hwaccel_gpus 0,1,…`)** — `-hwaccel cuda -hwaccel_output_format cuda` +
+`fps=1:round=near,hwdownload,format=nv12,scale=…` — takes decode off the CPUs (4K ≈ 1.75× faster per stream;
+~2 streams/GPU before `cuvidCreateDecoder` starts failing on the A40's session limit). **Use it ONLY when the
+output height is even.**
+
+> **Byte-identity depends on output parity** (measured 2026-08-21, per-frame over a stratified sample):
+> even output (512×910) → **10/10 videos byte-identical**; **odd output (512×683, the mini 4:3 mode) → 5/5 videos
+> DIFFER** (e.g. 225 of 525 frames), because `hwdownload,format=nv12` → swscale rounds chroma differently for an
+> odd height. `frames/verify_nvdec.sh` is the check; `frames/redo_nvdec_odd.sh` re-extracts affected videos on CPU.
+> The extractor does not yet gate on this automatically — pass `--hwaccel_gpus` only for known-even sources, or
+> verify afterwards. Also NOT identical: cuvid's own `-resize`, and `format=yuv420p` before `scale`.
 
 Frame sizes: portrait 16:9 video → 512×910; the mini camera's 4:3 mode (2880×3840) → 512×683;
 headlight (landscape 1920×1080) → 910×512. `frame_dims.py` caches (video, w, h, n_frames) per dir —
