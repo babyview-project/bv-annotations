@@ -179,6 +179,12 @@ def detect_if_body_part_in_image(keypoint_scores):
     
     return body_in_image, face_in_image, left_hand_in_image, right_hand_in_image, left_foot_in_image, right_foot_in_image
     
+# A truncated/empty pkl (e.g. run_model.py killed mid-write) used to abort the whole build with
+# EOFError after hours of work. Record and skip instead; the count is reported at the end and the
+# affected videos can be re-posed and the CSV rebuilt.
+BAD_PKL_LOG = os.environ.get('BAD_PKL_LOG', '/data2/mcfrank/pose_2026_1/bad_pkls_runtime.txt')
+
+
 def extract_list_of_metadata_dicts_from_pkl(pkl_path):
     ret_dict_list = []
     with open(pkl_path, 'rb') as f:
@@ -186,7 +192,12 @@ def extract_list_of_metadata_dicts_from_pkl(pkl_path):
         second_in_video = int(os.path.basename(pkl_path).replace('.pkl', ''))
         time_in_extended_iso = str(datetime.timedelta(seconds=second_in_video))
         
-        pkl_dict = _cpu_unpickle(f)
+        try:
+            pkl_dict = _cpu_unpickle(f)
+        except Exception as e:                      # truncated / empty / unreadable pkl
+            with open(BAD_PKL_LOG, 'a') as _bl:
+                _bl.write(f'{pkl_path}\t{type(e).__name__}\n')
+            return []
         pose_dict = pkl_dict['pose_dict']
         
         person_bbox_list = pkl_dict['person_detection_dict']['person_bboxes']
@@ -320,5 +331,6 @@ if __name__ == '__main__':
                     out.write(line)
     import shutil
     shutil.rmtree(part_dir)
-    print("WROTE", output_csv_path)
+    nbad = sum(1 for _ in open(BAD_PKL_LOG)) if os.path.exists(BAD_PKL_LOG) else 0
+    print("WROTE", output_csv_path, f"| unreadable pkls skipped: {nbad} (see {BAD_PKL_LOG})")
 
