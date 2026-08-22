@@ -25,10 +25,15 @@ while true; do
     [ "$nfree" -ge "${MINGPUS:-4}" ] && break
     echo "WAITING for GPUs (free: ${free:-none}) $(date)"; sleep 600
   done
+  # recompute pending AFTER the GPU wait: videos may have been dequeued/moved while we slept
+  comm -23 <(ls $W/markers | sort) <(ls $W/pose_done | sort) > $W/waves/pending.txt
+  n=$(wc -l < $W/waves/pending.txt); [ "$n" -eq 0 ] && continue
   wave=$((wave+1)); L=$W/waves/wave_${wave}.txt; : > $L
   cp $W/waves/pending.txt $W/waves/wave_${wave}_videos.txt
   while read v; do ls $FR/$v/*.jpg >> $L; done < $W/waves/wave_${wave}_videos.txt
   # shuffle so each Ray worker's contiguous chunk is a random sample of videos -> no straggler workers
+  # NOTE: a single vanished jpg aborts the whole Ray job (ultralytics raises FileNotFoundError), so
+  # never move/delete frame dirs while a wave is building its list or running -- see docs/handoff.
   shuf $L -o $L
   echo "WAVE $wave start: $n videos, $(wc -l < $L) frames, $(date)"
   np=$((nfree * 4))
