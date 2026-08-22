@@ -18,13 +18,6 @@ while true; do
     sleep 600; continue
   fi
   if [ "$n" -lt "$MINBATCH" ] && [ "$xdone" -eq 0 ]; then sleep 600; continue; fi
-  # shared box: refuse to launch onto GPUs someone else is filling (an OOM'd wave burns retries doing nothing)
-  while true; do
-    free=$(nvidia-smi --query-gpu=index,memory.used --format=csv,noheader,nounits | awk -F', ' '$2<8000{print $1}' | tr '\n' ',' | sed 's/,$//')
-    nfree=$(tr -cd ',' <<<"$free" | wc -c); nfree=$((nfree+1)); [ -z "$free" ] && nfree=0
-    [ "$nfree" -ge "${MINGPUS:-4}" ] && break
-    echo "WAITING for GPUs (free: ${free:-none}) $(date)"; sleep 600
-  done
   # recompute pending AFTER the GPU wait: videos may have been dequeued/moved while we slept
   comm -23 <(ls $W/markers | sort) <(ls $W/pose_done | sort) > $W/waves/pending.txt
   n=$(wc -l < $W/waves/pending.txt); [ "$n" -eq 0 ] && continue
@@ -36,6 +29,14 @@ while true; do
   # never move/delete frame dirs while a wave is building its list or running -- see docs/handoff.
   shuf $L -o $L
   echo "WAVE $wave start: $n videos, $(wc -l < $L) frames, $(date)"
+  # shared box: refuse to launch onto GPUs someone else is filling (an OOM'd wave burns retries doing nothing)
+  while true; do
+    free=$(nvidia-smi --query-gpu=index,memory.used --format=csv,noheader,nounits | awk -F', ' '$2<8000{print $1}' | tr '\n' ',' | sed 's/,$//')
+    nfree=$(tr -cd ',' <<<"$free" | wc -c); nfree=$((nfree+1)); [ -z "$free" ] && nfree=0
+    [ "$nfree" -ge "${MINGPUS:-2}" ] && break
+    echo "WAITING for GPUs (free: ${free:-none}) $(date)"; sleep 600
+  done
+
   np=$((nfree * 4))
   echo "  using GPUs $free ($np workers)"
   (cd /data2/mcfrank/babyview-pose && CUDA_VISIBLE_DEVICES=$free $PY run_model.py \
