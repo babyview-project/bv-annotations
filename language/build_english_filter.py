@@ -34,6 +34,8 @@ ap.add_argument("--video-min", type=float, default=0.50)
 ap.add_argument("--min-utts", type=int, default=20, help="below this a video is exempt and kept")
 ap.add_argument("--drop-disagree", action="store_true")
 ap.add_argument("--report", default="", help="write the per-video decision table here")
+ap.add_argument("--min-join", type=float, default=0.90,
+                help="abort if the pair<->language join covers less than this fraction")
 a = ap.parse_args()
 
 L = pd.read_parquet(a.lang)
@@ -63,10 +65,31 @@ print(f"utterances in kept videos: {len(u):,} | dropped non-English {int(drop_ut
       f"({100*drop_utt.mean():.2f}%)")
 
 # ---- apply to the pair manifest ------------------------------------------------
+# Join on (video_id, utterance_id) when the manifest carries it. Text matching is a FALLBACK and
+# a trap: the CLIP-era pair pipeline and the parsed-transcript pipeline segment utterances
+# differently, so on 2025.2 only 47% of pair texts appear verbatim in the language table — a join
+# failure that silently looked like "53% of pairs are non-English".
 P = pd.read_parquet(a.pairs)
-ok = u.loc[u.keep_utt, ["video_id", "text"]].drop_duplicates()
 before = len(P)
-out = P.merge(ok, on=["video_id", "text"], how="inner")
+if "utterance_id" in P.columns and "utterance_id" in u.columns:
+    key = ["video_id", "utterance_id"]
+    joinable = P.merge(u[key].drop_duplicates(), on=key, how="inner")
+    ok = u.loc[u.keep_utt, key].drop_duplicates()
+    how = "utterance_id"
+else:
+    key = ["video_id", "text"]
+    joinable = P.merge(u[key].drop_duplicates(), on=key, how="inner")
+    ok = u.loc[u.keep_utt, key].drop_duplicates()
+    how = "text (FALLBACK)"
+cov = len(joinable) / max(before, 1)
+print(f"join on {how}: {len(joinable):,}/{before:,} pairs matched ({100*cov:.1f}%)")
+if cov < a.min_join:
+    raise SystemExit(
+        f"ABORT: only {100*cov:.1f}% of pairs join to the language table (need "
+        f"{100*a.min_join:.0f}%). Dropping the rest would look like a language decision but is a "
+        f"KEY MISMATCH. Rebuild the pair manifest from the same transcript the annotation used, "
+        f"or add utterance_id to it.")
+out = P.merge(ok, on=key, how="inner")
 kid_b = P.video_id.str.split("_").str[0].nunique()
 kid_a = out.video_id.str.split("_").str[0].nunique()
 out.to_parquet(a.out, index=False)
