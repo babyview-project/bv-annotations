@@ -76,6 +76,30 @@ Its false positives are the classic short-string artifacts (`it`, `fr`, `es`, `d
 4. **Disagreements are not noise to be averaged away.** Use `agree` as a filter or a weight;
    `lang` is deliberately null where the passes differ.
 
+## Deriving an English-filtered corpus
+
+`build_english_filter.py` implements the two-level rule the vlm-headcam paper uses. State it in
+Methods verbatim:
+
+> A recording was excluded if fewer than 50% of its language-decidable utterances were English;
+> recordings with fewer than 20 decidable utterances were exempt from this rule. Within retained
+> recordings, individual non-English utterances were excluded.
+
+Deliberately **not** a child-level filter. The household survey correlates r = 0.47 with the
+recordings, and filtering by child cost 4.3 points relative to dropping the same number of
+*random* children — it deleted mostly-English data from bilingual households while keeping the
+genuinely non-English content of others. Video-level retains every child.
+
+Uncertainty policy, all switchable:
+- `undecidable` utterances are KEPT and excluded from the video-level denominator (they are
+  overwhelmingly 1–2 words carrying no language commitment; counting them as non-English would
+  make short-utterance-heavy recordings look foreign)
+- pass-disagreement utterances are kept by default (`--drop-disagree`) and likewise excluded from
+  the denominator
+
+`supplemental_table.py` emits the per-child survey-vs-measured table, including the size of the
+gap, the undecidable and disagreement rates, and how many of each child's videos survive the rule.
+
 ## Running it
 
 ```bash
